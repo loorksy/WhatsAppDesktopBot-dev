@@ -479,6 +479,14 @@ class WhatsAppBotService {
     return groups;
   }
 
+  async listBulkGroups() {
+    const groups = await this.fetchGroups();
+    return groups.map((g) => ({
+      id: g.id,
+      name: g.name || g.subject || 'مجموعة بدون اسم',
+    }));
+  }
+
   async processBacklog({ startAtMs = null, limitPerChat = 800 } = {}) {
     if (!this.socket || !this.isReady) throw new Error('WhatsApp not ready');
     const groups = await this.fetchGroups();

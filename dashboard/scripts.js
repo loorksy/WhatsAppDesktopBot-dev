@@ -59,7 +59,8 @@ const api = {
   bulkSaveDraft(d){ return this.request('/api/bulk/save-draft', { method:'POST', body: JSON.stringify(d||{}) }); },
   bulkLoadDraft(){ return this.request('/api/bulk/load-draft'); },
   bulkSaveSettings(d){ return this.request('/api/bulk/save-settings', { method:'POST', body: JSON.stringify(d||{}) }); },
-  bulkLoadSettings(){ return this.request('/api/bulk/load-settings'); }
+  bulkLoadSettings(){ return this.request('/api/bulk/load-settings'); },
+  bulkGroups(){ return this.request('/api/bulk/groups'); }
 };
 
 function $(id){ return document.getElementById(id); }
@@ -89,6 +90,9 @@ function createLogger(box){
 
 function saveLocal(key, data){ localStorage.setItem(key, JSON.stringify(data)); }
 function loadLocal(key, fallback){ try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
+
+let lastConnectionStatus = null;
+let bulkGroupsLoaded = false;
 
 async function initLogin(){
   const btn = $('btn-login');
@@ -124,6 +128,7 @@ async function initDashboard(){
   socket.on('status', (s) => updateStatusPills(s));
 
   const savedUi = loadLocal('ui-state', {});
+  const savedBulkId = savedUi?.bulk?.draft?.groupId || savedUi?.bulk?.groupId || '';
   restoreUI(savedUi);
 
   $('btn-logout').onclick = async ()=>{ await api.logout(); clearToken(); window.location.href='/dashboard/login.html'; };
@@ -148,7 +153,7 @@ async function initDashboard(){
   $('btn-check-backlog').onclick = async ()=>{ const res = await api.checkBacklog({ startAtMs: getBacklogStartTs() }); logMain(`نتيجة الفحص: ${res.total} رسالة`); (res.byGroup||[]).forEach(g=>logMain(`- ${g.name}: ${g.count}`)); };
   $('btn-backlog').onclick = async ()=>{ await api.processBacklog({ startAtMs: getBacklogStartTs() }); logMain('✓ تم دفع الأرشيف للطابور'); };
 
-  $('btn-refresh-groups').onclick = ()=> fetchGroups(savedUi, true);
+  $('btn-refresh-groups').onclick = ()=> { fetchGroups(savedUi, true); loadBulkGroups({ savedId: $('groupSelect').value, force: true }); };
   $('btn-save-bulk-settings').onclick = async ()=>{ await api.bulkSaveSettings(getBulkSettings()); await saveAll(); logBulk('حُفظت إعدادات الإرسال الجماعي'); };
   $('btn-save-draft').onclick = async ()=>{ await api.bulkSaveDraft(getBulkDraft()); logBulk('حُفظت المسودة'); await saveAll(); };
   $('btn-load-draft').onclick = async ()=>{ const d = await api.bulkLoadDraft(); if (d){ applyBulkDraft(d); logBulk('تم تحميل المسودة'); await saveAll(); } else { logBulk('لا توجد مسودة'); } };
@@ -162,12 +167,15 @@ async function initDashboard(){
 
   await loadRemoteState();
   fetchGroups(savedUi, false);
+  loadBulkGroups({ savedId: savedBulkId });
   refreshStatus();
   pollStatus();
 }
 
 function updateStatusPills(status){
   if (!status) return;
+  const prev = lastConnectionStatus;
+  lastConnectionStatus = status.connectionStatus;
   const ready = $('pill-ready');
   const running = $('pill-running');
   const map = {
@@ -188,6 +196,10 @@ function updateStatusPills(status){
   const readyBulk = document.querySelector('#bulk #pill-ready');
   if (readyBulk) readyBulk.textContent = readyLabel;
   if (status.bulk){ $('progress').textContent = `${status.bulk.index||0} / ${status.bulk.total||0}`; }
+  if (status.connectionStatus === 'connected' && prev !== 'connected'){
+    const saved = loadLocal('ui-state', {})?.bulk?.draft?.groupId || '';
+    loadBulkGroups({ savedId: saved, force: true });
+  }
 }
 
 function renderGroups(list, selectedSet, lastMap){
@@ -209,6 +221,56 @@ async function fetchGroups(savedUi = {}, force = false){
     const lastMap = savedUi.lastChecked || local.lastChecked || {};
     renderGroups(list, new Set(saved), lastMap);
   }catch(e){ const box=$('groups'); if(box) box.innerHTML='تعذر الجلب'; }
+}
+
+function renderBulkGroups(list = [], preferredId){
+  const select = $('groupSelect');
+  if (!select) return;
+  select.innerHTML = '';
+  if (!list.length){
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.disabled = true;
+    opt.selected = true;
+    opt.textContent = 'لا توجد مجموعات متاحة حالياً';
+    select.appendChild(opt);
+    return;
+  }
+
+  list.forEach((g) => {
+    const opt = document.createElement('option');
+    opt.value = g.id;
+    opt.textContent = g.name || g.subject || g.id;
+    select.appendChild(opt);
+  });
+
+  const targetId = preferredId || select.dataset.pendingSelection;
+  if (targetId){
+    const found = [...select.options].find((o) => o.value === targetId);
+    if (found) found.selected = true;
+  }
+  select.dataset.pendingSelection = '';
+}
+
+async function loadBulkGroups({ savedId = '', force = false } = {}){
+  const select = $('groupSelect');
+  if (!select) return;
+  if (!force && bulkGroupsLoaded && select.options.length) return;
+  const preferred = savedId || select.value || select.dataset.pendingSelection || '';
+  select.dataset.pendingSelection = preferred;
+  try {
+    const list = await api.bulkGroups();
+    bulkGroupsLoaded = true;
+    renderBulkGroups(list, preferred);
+  } catch (e) {
+    select.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.disabled = true;
+    opt.selected = true;
+    opt.textContent = 'تعذر جلب المجموعات (تأكد من الاتصال)';
+    select.appendChild(opt);
+  }
 }
 
 function parseClients(raw, fallbackEmoji){
@@ -267,7 +329,21 @@ function parseInput(txt){ txt = (txt||'').replace(/\r/g,'').trim(); if (!txt) re
 function renderPreview(items){ const preview = $('preview'); if(!preview) return; preview.innerHTML=''; if (!items.length){ preview.innerHTML='<div class="muted">المعاينة فارغة</div>'; return; } items.forEach((t,i)=>{ const div=document.createElement('div'); div.style.borderBottom='1px dashed #1e293b'; div.style.padding='6px'; div.innerHTML = `<strong>#${i+1}</strong><br>${t.replace(/\n/g,'<br>')}`; preview.appendChild(div); }); }
 function getBulkSettings(){ return { delaySec: Math.max(0, Number($('delaySec').value || 0)), rpm: Math.max(1, Number($('rpmBulk').value || 1)) }; }
 function getBulkDraft(){ return { groupId: $('groupSelect').value || '', raw: $('bulkInput').value || '', splitMode }; }
-function applyBulkDraft(d){ if (!d) return; $('bulkInput').value = d.raw || ''; splitMode = d.splitMode || 'blank'; $('splitModeName').textContent = (splitMode === 'blank') ? 'تقسيم بالفراغات' : 'كل سطر رسالة'; if (d.groupId) { const opt = [...$('groupSelect').options].find(o=>o.value===d.groupId); if (opt) opt.selected = true; } $('btn-parse').click(); }
+function applyBulkDraft(d){
+  if (!d) return;
+  $('bulkInput').value = d.raw || '';
+  splitMode = d.splitMode || 'blank';
+  $('splitModeName').textContent = (splitMode === 'blank') ? 'تقسيم بالفراغات' : 'كل سطر رسالة';
+  if (d.groupId) {
+    const select = $('groupSelect');
+    if (select){
+      const opt = [...select.options].find(o=>o.value===d.groupId);
+      if (opt) opt.selected = true;
+      else select.dataset.pendingSelection = d.groupId;
+    }
+  }
+  $('btn-parse').click();
+}
 function applyBulkSettings(b){ if (!b) return; if (typeof b.delaySec !== 'undefined') $('delaySec').value = b.delaySec; if (typeof b.rpm !== 'undefined') $('rpmBulk').value = b.rpm; if (b.draft) applyBulkDraft(b.draft); }
 function loadClients(saved){ if (!saved?.clients) return; applyClients(saved.clients); }
 function restoreUI(saved){ if (!saved) return; if (saved.settings) applySettings(saved.settings); if (saved.clients) applyClients(saved.clients); if (saved.selectedGroupIds) applyGroups(saved.selectedGroupIds); if (saved.bulk) applyBulkSettings(saved.bulk); if (saved.bulkInput) $('bulkInput').value = saved.bulkInput; if (saved.backlogDate) $('backlogDate').value = saved.backlogDate; if (saved.splitMode) { splitMode = saved.splitMode; $('splitModeName').textContent = (splitMode === 'blank') ? 'تقسيم بالفراغات' : 'كل سطر رسالة'; }

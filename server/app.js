@@ -93,6 +93,7 @@ function iobotAttach(botInstance, ioInstance) {
   botInstance.emitter.on('ready', () => ioInstance.emit('status', botInstance.getStatus()));
   botInstance.emitter.on('disconnected', () => ioInstance.emit('status', botInstance.getStatus()));
   botInstance.emitter.on('status', (status) => ioInstance.emit('status', status));
+  botInstance.emitter.on('bulk:groups', (payload) => ioInstance.emit('bulk:groups', payload));
 }
 
 module.exports = app;

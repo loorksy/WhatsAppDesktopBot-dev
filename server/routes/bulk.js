@@ -64,9 +64,10 @@ module.exports = ({ bot }) => {
     try {
       const groups = (await (bot.listBulkGroups ? bot.listBulkGroups() : bot.fetchGroups())) || [];
       const shaped = groups.map((g) => ({ id: g.id, name: g.name || g.subject || 'مجموعة' }));
-      res.json(shaped);
+      try { bot.log(`📥 تم جلب المجموعات: ${shaped.length}`); } catch {}
+      res.json({ success: true, groups: shaped });
     } catch (e) {
-      res.status(400).json({ error: e.message || e });
+      res.status(400).json({ success: false, error: e.message || e });
     }
   });
 

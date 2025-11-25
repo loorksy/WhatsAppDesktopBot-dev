@@ -126,6 +126,11 @@ async function initDashboard(){
     }
   });
   socket.on('status', (s) => updateStatusPills(s));
+  socket.on('bulk:groups', (payload = {}) => {
+    const list = Array.isArray(payload) ? payload : (payload.groups || []);
+    console.log('Groups from socket:', list);
+    renderBulkGroups(list, $('groupSelect')?.value || $('groupSelect')?.dataset?.pendingSelection || '');
+  });
 
   const savedUi = loadLocal('ui-state', {});
   const savedBulkId = savedUi?.bulk?.draft?.groupId || savedUi?.bulk?.groupId || '';
@@ -275,7 +280,8 @@ async function loadBulkGroups({ savedId = '', force = false } = {}){
   const preferred = savedId || select.value || select.dataset.pendingSelection || '';
   select.dataset.pendingSelection = preferred;
   try {
-    const list = await api.bulkGroups();
+    const response = await api.bulkGroups();
+    const list = Array.isArray(response) ? response : (response?.groups || []);
     console.log("Groups from API:", list);
     bulkGroupsLoaded = true;
     renderBulkGroups(list, preferred);

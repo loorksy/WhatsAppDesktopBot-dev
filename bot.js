@@ -469,13 +469,18 @@ class WhatsAppBotService {
   async fetchGroups() {
     if (!this.isReady) throw new Error('WhatsApp not ready');
     const groupsMap = await this.socket.groupFetchAllParticipating();
-    const groups = Object.values(groupsMap || {}).map((g) => ({
-      id: g.id,
-      name: g.subject,
-      count: Array.isArray(g.participants) ? g.participants.length : 0,
-    }));
+    const groups = Object.values(groupsMap || {})
+      .filter((g) => g?.id && g?.id.endsWith('@g.us'))
+      .map((g) => ({
+        id: g.id,
+        name: g.subject || g.name || 'مجموعة',
+        count: Array.isArray(g.participants) ? g.participants.length : 0,
+      }));
     this.log(`📥 تم جلب المجموعات: ${groups.length}`);
     groups.forEach((g) => this.groupNameCache.set(g.id, g.name));
+    try {
+      this.emitter.emit('bulk:groups', { type: 'groups', groups });
+    } catch {}
     return groups;
   }
 

@@ -102,6 +102,11 @@ class Bot {
   onLog(cb) { this.emitter.on('log', cb); }
   log(line) { try { this.emitter.emit('log', line); } catch {} }
   wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+  _setConnectionStatus(state) {
+    if (!state || this.connectionStatus === state) return;
+    this.connectionStatus = state;
+    try { this.emitter.emit('status', this.getStatus()); } catch {}
+  }
 
   normalizeArabic(s = '') {
     if (!s) return '';
@@ -167,7 +172,7 @@ class Bot {
   async init() {
     if (!fs.existsSync(this.sessionsDir)) fs.mkdirSync(this.sessionsDir, { recursive: true });
 
-    this.connectionStatus = this.connectionStatus === 'connected' ? 'connected' : 'connecting';
+    this._setConnectionStatus(this.connectionStatus === 'connected' ? 'connected' : 'connecting');
 
     this.client = new Client({
       authStrategy: new LocalAuth({ dataPath: this.sessionsDir }),
@@ -177,7 +182,7 @@ class Bot {
     this.client.on('qr', async (qr) => {
       this.qrDataUrl = await qrcode.toDataURL(qr);
       this.isReady = false;
-      this.connectionStatus = 'connecting';
+      this._setConnectionStatus('qr_ready');
       this.log('[QR] جاهز — امسحه من WhatsApp');
       try { this.emitter.emit('qr', this.qrDataUrl); } catch {}
     });
@@ -185,9 +190,13 @@ class Bot {
     this.client.on('ready', () => {
       this.isReady = true;
       this.qrDataUrl = null;
-      this.connectionStatus = 'connected';
+      this._setConnectionStatus('connected');
       this.log('✅ WhatsApp جاهز');
       try { this.emitter.emit('ready'); } catch {}
+    });
+
+    this.client.on('authenticated', () => {
+      this._setConnectionStatus('connected');
     });
 
     this.client.on('disconnected', (r) => {
@@ -198,15 +207,22 @@ class Bot {
       const isLogout = reason === DisconnectReason?.loggedOut || reason === 'LOGOUT' || reason === 'loggedOut';
 
       if (isLogout) {
-        this.connectionStatus = 'loggedOut';
+        this._setConnectionStatus('logged_out');
         this.log('⚠️ مسجّل الخروج: ' + reason);
       } else {
-        this.connectionStatus = 'reconnecting';
+        this._setConnectionStatus('disconnected');
         this.log('❌ تم قطع الاتصال: ' + reason + ' — إعادة الاتصال…');
         this._scheduleReconnect();
       }
 
       try { this.emitter.emit('disconnected', r); } catch {}
+    });
+
+    this.client.on('auth_failure', (msg) => {
+      this.isReady = false;
+      this.running = false;
+      this._setConnectionStatus('logged_out');
+      this.log('⚠️ فشل المصادقة: ' + (msg || ''));
     });
 
     // رسائل حيّة → ادفع للـ FIFO queue
@@ -469,7 +485,7 @@ class Bot {
         fs.rmSync(this.sessionsDir, { recursive: true, force: true });
       }
     } catch {}
-    this.connectionStatus = 'connecting';
+    this._setConnectionStatus('connecting');
     return this.init();
   }
 
@@ -478,7 +494,7 @@ class Bot {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       try {
-        this.connectionStatus = 'reconnecting';
+        this._setConnectionStatus('reconnecting');
         this.client?.initialize();
       } catch {}
     }, 2000);

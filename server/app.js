@@ -89,6 +89,7 @@ server.listen(PORT, () => {
 function iobotAttach(botInstance, ioInstance) {
   botInstance.onLog((line) => ioInstance.emit('log', { line, ts: Date.now() }));
   botInstance.emitter.on('qr', (qr) => ioInstance.emit('qr', { qr }));
+  botInstance.emitter.on('status', (s) => ioInstance.emit('status', s));
   botInstance.emitter.on('ready', () => ioInstance.emit('status', botInstance.getStatus()));
   botInstance.emitter.on('disconnected', () => ioInstance.emit('status', botInstance.getStatus()));
 }

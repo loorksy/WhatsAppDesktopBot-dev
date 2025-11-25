@@ -164,9 +164,11 @@ function updateStatusPills(status){
   if (!status) return;
   const ready = $('pill-ready');
   const running = $('pill-running');
-  const readyLabel = status.connectionStatus === 'connected' ? 'متصل'
-    : status.connectionStatus === 'reconnecting' ? 'إعادة الاتصال...'
-    : status.connectionStatus === 'loggedOut' ? 'مسجّل الخروج'
+  const state = status.connectionStatus;
+  const readyLabel = state === 'connected' ? 'متصل'
+    : state === 'reconnecting' ? 'إعادة الاتصال...'
+    : state === 'qr_ready' ? 'جاهز لمسح QR'
+    : state === 'logged_out' ? 'مسجّل الخروج'
     : 'غير متصل';
   if (ready) ready.textContent = readyLabel;
   if (running) running.textContent = status.running ? 'شغّال' : 'متوقف';

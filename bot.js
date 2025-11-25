@@ -223,7 +223,14 @@ class WhatsAppBotService {
 
   async _createSocket() {
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionsDir);
-    const { version } = await fetchLatestBaileysVersion();
+    let version = undefined;
+    try {
+      const latest = await fetchLatestBaileysVersion();
+      version = latest?.version;
+      this.log(`[wa] using version ${Array.isArray(version) ? version.join('.') : 'unknown'}`);
+    } catch (e) {
+      this.log('[wa] تعذر جلب نسخة واتساب، سيتم استخدام الافتراضية: ' + (e.message || e));
+    }
 
     this.socket = makeWASocket({
       auth: state,
@@ -232,6 +239,11 @@ class WhatsAppBotService {
       logger: this.logger,
       browser: ['Desktop', 'Chrome', '1.0.0'],
       syncFullHistory: false,
+      connectTimeoutMs: 60_000,
+      defaultQueryTimeoutMs: 60_000,
+      shouldSyncHistoryMessage: false,
+      emitOwnEvents: false,
+      markOnlineOnConnect: false,
     });
 
     this.socket.ev.on('creds.update', saveCreds);
@@ -266,16 +278,19 @@ class WhatsAppBotService {
         this.emitter.emit('status', this.getStatus());
       } catch {}
     } else if (connection === 'close') {
-      const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.message || 'unknown';
-      const isLogout = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut;
+      const dcError = lastDisconnect?.error;
+      const reason = dcError?.output?.statusCode || dcError?.message || 'unknown';
+      const isLogout = dcError?.output?.statusCode === DisconnectReason.loggedOut;
       this.isReady = false;
       this.running = false;
+      this.socket = null;
       if (isLogout) {
         this.connectionStatus = 'logged_out';
         this.log('⚠️ تم تسجيل الخروج من واتساب');
       } else {
         this.connectionStatus = 'reconnecting';
         this.log(`❌ انقطع الاتصال: ${reason} — إعادة المحاولة…`);
+        if (dcError && dcError.stack) this.log(dcError.stack, 'error');
         this._scheduleReconnect();
       }
       try {
@@ -431,7 +446,9 @@ class WhatsAppBotService {
   // ========= API =========
   async start() {
     if (!this.socket) await this.init();
-    if (!this.isReady) throw new Error('WhatsApp not ready');
+    if (!this.isReady) {
+      await this.waitForReady();
+    }
     this.running = true;
     this.log('🚀 بدأ التفاعل');
     this._runWorker();
@@ -615,6 +632,15 @@ class WhatsAppBotService {
     const jid = this._normalizeJid(number);
     const res = await this.socket.sendMessage(jid, { text: message });
     return res?.key?.id || null;
+  }
+
+  async waitForReady(timeoutMs = 60_000) {
+    const startTs = Date.now();
+    while (!this.isReady) {
+      const elapsed = Date.now() - startTs;
+      if (elapsed > timeoutMs) throw new Error('WhatsApp not ready (timeout)');
+      await this.wait(500);
+    }
   }
 
   _normalizeJid(input) {

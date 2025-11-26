@@ -200,6 +200,28 @@ class WhatsAppBotService {
     this.chats.set(chat.id, { ...prev, ...chat });
   }
 
+  async _loadMessagesIntoHistory(chatId, limitPerChat = 200) {
+    if (!chatId || !this.socket?.loadMessages) return;
+    try {
+      const existing = this.messageHistory.get(chatId) || [];
+      if (existing.length >= Math.max(20, Math.floor(limitPerChat / 2))) return;
+
+      const fetched = await this.socket.loadMessages(chatId, limitPerChat, undefined);
+      const list = Array.isArray(fetched?.messages)
+        ? fetched.messages
+        : Array.isArray(fetched)
+          ? fetched
+          : [];
+
+      list.forEach((m) => this._recordMessage(m));
+      if (list.length) {
+        this.log(`[history] loaded ${list.length} messages for ${chatId}`);
+      }
+    } catch (e) {
+      this.log(`[history] فشل تحميل الرسائل ${chatId}: ${e.message || e}`);
+    }
+  }
+
   _wireChatCache() {
     if (!this.socket?.ev || this._boundChatHandlers) return;
     this._boundChatHandlers = true;
@@ -708,6 +730,7 @@ class WhatsAppBotService {
     for (const chat of target) {
       const chatId = chat.id;
       const since = startAtMs ?? this.getLastChecked(chatId) ?? 0;
+      await this._loadMessagesIntoHistory(chatId, limitPerChat);
       this.log(`[backlog] ${chat.name} since ${since ? new Date(since).toLocaleString() : '—'}`);
       const msgs = (this.messageHistory.get(chatId) || [])
         .filter((m) => m.tsMs > since && !m.message?.key?.fromMe && !!m.text)
@@ -757,6 +780,7 @@ class WhatsAppBotService {
     for (const chat of target) {
       const chatId = chat.id;
       const since = startAtMs ?? this.getLastChecked(chatId) ?? 0;
+      await this._loadMessagesIntoHistory(chatId, limitPerChat);
       const msgs = (this.messageHistory.get(chatId) || [])
         .filter((m) => m.tsMs > since && !m.message?.key?.fromMe && !!m.text)
         .sort((a, b) => a.tsMs - b.tsMs)

@@ -1,14 +1,14 @@
 {
-  "name": "whatsappdesktopbot",
+  "name": "whatsappautomationai",
   "version": "1.0.1",
-  "description": "WhatsApp Desktop Bot (Electron + Baileys)",
+  "description": "WhatsAppAutomationAI (Electron + Baileys)",
   "main": "server/app.js",
   "scripts": {
     "start": "node server/app.js"
   },
   "build": {
-    "appId": "com.ahmad.whatsappbot",
-    "productName": "WhatsApp Desktop Bot",
+    "appId": "com.ahmad.whatsappautomationai",
+    "productName": "WhatsAppAutomationAI",
     "directories": {
       "output": "dist"
     },

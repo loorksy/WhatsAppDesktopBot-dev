@@ -1,4 +1,4 @@
-// bot.js — Baileys powered bot service
+// bot.js — WhatsAppAutomationAI Baileys-powered service
 
 const EventEmitter = require('events');
 const fs = require('fs');
@@ -73,7 +73,7 @@ class SimpleStore {
   }
 }
 
-class WhatsAppBotService {
+class WhatsAppAutomationAIService {
   constructor({ sessionsDir }) {
     this.emitter = new EventEmitter();
     this.sessionsDir = sessionsDir;
@@ -101,7 +101,7 @@ class WhatsAppBotService {
 
     this.clientsRaw = [];
 
-    this.state = new SimpleStore(path.join(this.dataDir, 'bot-state.json'));
+    this.state = new SimpleStore(path.join(this.dataDir, 'whatsappautomationai-state.json'));
 
     this.queue = [];
     this.workerRunning = false;
@@ -109,7 +109,7 @@ class WhatsAppBotService {
     this.queueDelayMs = 1000;
     this.queueHistory = [];
     this.queueHistoryLimit = 100;
-    this.queueConfigStore = new SimpleStore(path.join(this.dataDir, 'queue-config.json'));
+    this.queueConfigStore = new SimpleStore(path.join(this.dataDir, 'whatsappautomationai-queue-config.json'));
     this.queueConfig = Object.assign(
       {
         delayMsBetweenMessages: 1000,
@@ -118,7 +118,7 @@ class WhatsAppBotService {
       },
       this.queueConfigStore.get('config', {})
     );
-    this.remittanceConfigStore = new SimpleStore(path.join(this.dataDir, 'remittance-config.json'));
+    this.remittanceConfigStore = new SimpleStore(path.join(this.dataDir, 'whatsappautomationai-remittance-config.json'));
     this.remittanceConfig = Object.assign(
       {
         remittanceNotificationGroups: [],
@@ -1102,50 +1102,52 @@ class WhatsAppBotService {
   }
 }
 
-let singleton;
+let automationAISingleton;
 
-function getBotInstance(opts = {}) {
-  if (!singleton) {
-    singleton = new WhatsAppBotService(opts);
+function getAutomationAIInstance(opts = {}) {
+  if (!automationAISingleton) {
+    automationAISingleton = new WhatsAppAutomationAIService(opts);
   }
-  return singleton;
+  return automationAISingleton;
 }
 
-async function startBot(opts = {}) {
-  const bot = getBotInstance(opts);
-  if (!bot.socket) await bot.init();
-  await bot.start();
-  return bot.getStatus();
+async function startAutomationAI(opts = {}) {
+  const automationAI = getAutomationAIInstance(opts);
+  if (!automationAI.socket) await automationAI.init();
+  await automationAI.start();
+  return automationAI.getStatus();
 }
 
-async function stopBot() {
-  if (!singleton) return null;
-  await singleton.stop();
-  return singleton.getStatus();
+async function stopAutomationAI() {
+  if (!automationAISingleton) return null;
+  await automationAISingleton.stop();
+  return automationAISingleton.getStatus();
 }
 
-async function restartBot(opts = {}) {
-  const bot = getBotInstance(opts);
-  if (!bot.socket) await bot.init();
-  await bot.restart();
-  return bot.getStatus();
+async function restartAutomationAI(opts = {}) {
+  const automationAI = getAutomationAIInstance(opts);
+  if (!automationAI.socket) await automationAI.init();
+  await automationAI.restart();
+  return automationAI.getStatus();
 }
 
-async function clearSession(opts = {}) {
-  const bot = getBotInstance(opts);
-  return bot.clearSession(opts);
+async function clearAutomationAISession(opts = {}) {
+  const automationAI = getAutomationAIInstance(opts);
+  return automationAI.clearSession(opts);
 }
 
-function getStatus() {
-  return singleton ? singleton.getStatus() : { isReady: false, running: false, connectionStatus: 'disconnected' };
+function getAutomationAIStatus() {
+  return automationAISingleton
+    ? automationAISingleton.getStatus()
+    : { isReady: false, running: false, connectionStatus: 'disconnected' };
 }
 
 module.exports = {
-  WhatsAppBotService,
-  startBot,
-  stopBot,
-  restartBot,
-  clearSession,
-  getStatus,
-  getBotInstance,
+  WhatsAppAutomationAIService,
+  startAutomationAI,
+  stopAutomationAI,
+  restartAutomationAI,
+  clearAutomationAISession,
+  getAutomationAIStatus,
+  getAutomationAIInstance,
 };

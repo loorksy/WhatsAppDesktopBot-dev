@@ -14,14 +14,14 @@ contextBridge.exposeInMainWorld('api', {
   setSettings: (s) => ipcRenderer.invoke('set-settings', s),
   getSettings: () => ipcRenderer.invoke('get-settings'),
 
-  startBot: () => ipcRenderer.invoke('start-bot'),
-  stopBot: () => ipcRenderer.invoke('stop-bot'),
+  startWhatsAppAutomationAI: () => ipcRenderer.invoke('start-whatsappautomationai'),
+  stopWhatsAppAutomationAI: () => ipcRenderer.invoke('stop-whatsappautomationai'),
 
   getLastChecked: () => ipcRenderer.invoke('get-last-checked'),
   processBacklog: (opts) => ipcRenderer.invoke('process-backlog', opts),
   checkBacklog:   (opts) => ipcRenderer.invoke('check-backlog', opts),
 
-  onLog: (cb) => ipcRenderer.on('bot-log', (_e, line) => cb(line)),
+  onLog: (cb) => ipcRenderer.on('whatsappautomationai-log', (_e, line) => cb(line)),
 
   // ===== Bulk (إرسال جماعي) =====
   bulkStart:   (opts) => ipcRenderer.invoke('bulk-start', opts),

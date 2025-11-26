@@ -7,13 +7,14 @@ const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const { getBotInstance } = require('../bot');
+const { getAutomationAIInstance } = require('../bot');
 const botRoutes = require('./routes/bot');
 const settingsRoutes = require('./routes/settings');
 const authRoutes = require('./routes/auth');
 const bulkRoutes = require('./routes/bulk');
 const archiveRoutes = require('./routes/archive');
 const queueRoutes = require('./routes/queue');
+const remittanceRoutes = require('./routes/remittance');
 
 const app = express();
 const server = http.createServer(app);
@@ -48,20 +49,21 @@ const authMiddleware = (req, res, next) => {
 
 app.use(authMiddleware);
 
-const bot = getBotInstance({ sessionsDir: path.join(__dirname, '..', 'sessions') });
+const automationAI = getAutomationAIInstance({ sessionsDir: path.join(__dirname, '..', 'whatsappautomationai-sessions') });
 (async () => {
-  await bot.init();
+  await automationAI.init();
   const saved = require('./routes/utils').loadSettings();
-  if (saved.settings) bot.setSettings(saved.settings);
-  if (saved.clients) bot.setClients(saved.clients);
-  if (saved.selectedGroupIds) bot.setSelectedGroups(saved.selectedGroupIds);
+  if (saved.settings) automationAI.setSettings(saved.settings);
+  if (saved.clients) automationAI.setClients(saved.clients);
+  if (saved.selectedGroupIds) automationAI.setSelectedGroups(saved.selectedGroupIds);
 })();
 
-app.use('/api', botRoutes({ bot, io, jwt, JWT_SECRET }));
-app.use('/api', settingsRoutes({ bot }));
-app.use('/api', bulkRoutes({ bot }));
-app.use('/api', archiveRoutes({ bot }));
-app.use('/api', queueRoutes({ bot }));
+app.use('/api', botRoutes({ bot: automationAI, io, jwt, JWT_SECRET }));
+app.use('/api', settingsRoutes({ bot: automationAI }));
+app.use('/api', bulkRoutes({ bot: automationAI }));
+app.use('/api', archiveRoutes({ bot: automationAI }));
+app.use('/api', queueRoutes({ bot: automationAI }));
+app.use('/api', remittanceRoutes());
 app.use('/', authRoutes({ jwt, JWT_SECRET }));
 
 app.use('/dashboard', express.static(DASHBOARD_DIR));
@@ -79,10 +81,10 @@ io.use((socket, next) => {
   }
 });
 
-iobotAttach(bot, io);
+iobotAttach(automationAI, io);
 io.on('connection', (socket) => {
-  socket.emit('status', bot.getStatus());
-  const qr = bot.getCurrentQr?.() || bot.qrDataUrl;
+  socket.emit('status', automationAI.getStatus());
+  const qr = automationAI.getCurrentQr?.() || automationAI.qrDataUrl;
   if (qr) socket.emit('qr', { qr });
 });
 

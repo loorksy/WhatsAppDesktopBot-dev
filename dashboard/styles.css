@@ -43,6 +43,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:#cbd5e1}
 .login-card{max-width:360px;width:100%}
 .remember-row{display:flex;align-items:center;gap:8px;margin:8px 0 4px}
 .flex-row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.space-between{justify-content:space-between;align-items:center}
 .compact-input{max-width:220px;padding:8px}
 .log-controls{display:flex;justify-content:space-between;align-items:center;margin-top:12px}
 .section-title{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:20px auto 10px;max-width:1100px;padding:0 10px}

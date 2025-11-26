@@ -3,11 +3,11 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
-const { Bot } = require('./bot');
+const { WhatsAppAutomationAIService } = require('./bot');
 
 const store = new Store.default();
 let win;
-let bot;
+let automationAI;
 
 /* ===== Bulk (إرسال جماعي) — ضعه قبل استخدامه ===== */
 const BulkStore = new (require('electron-store').default)({ name: 'bulk-state' });
@@ -39,24 +39,24 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  const sessionsDir = path.join(app.getPath('userData'), 'sessions');
-  bot = new Bot({ sessionsDir });
+  const sessionsDir = path.join(app.getPath('userData'), 'whatsappautomationai-sessions');
+  automationAI = new WhatsAppAutomationAIService({ sessionsDir });
 
-  bot.onLog((line) => { if (win) win.webContents.send('bot-log', line); });
+  automationAI.onLog((line) => { if (win) win.webContents.send('whatsappautomationai-log', line); });
 
-  await bot.init();
+  await automationAI.init();
 
   // ✅ حمّل الإعدادات/العملاء/المجموعات تلقائياً عند الإقلاع
   try {
     const initSettings = store.get('settings') || {};
     const initClients  = store.get('clients')  || [];
     const initGroups   = store.get('selectedGroupIds') || [];
-    bot.setSettings(initSettings);
-    bot.setClients(initClients);
-    bot.setSelectedGroups(initGroups);
-    bot.log('[init] preloaded settings/clients/groups');
+    automationAI.setSettings(initSettings);
+    automationAI.setClients(initClients);
+    automationAI.setSelectedGroups(initGroups);
+    automationAI.log('[init] preloaded settings/clients/groups');
   } catch (e) {
-    bot.log('[init] preload failed: ' + (e.message || e));
+    automationAI.log('[init] preload failed: ' + (e.message || e));
   }
 
   // استعادة حالة الإرسال الجماعي (إن وُجدت)
@@ -82,16 +82,16 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
 /* ============ IPC (القائمة الأساسية) ============ */
-ipcMain.handle('get-status', async () => bot.getStatus());
-ipcMain.handle('get-qr', async () => bot.getQR());
-ipcMain.handle('fetch-groups', async () => bot.fetchGroups());
+ipcMain.handle('get-status', async () => automationAI.getStatus());
+ipcMain.handle('get-qr', async () => automationAI.getQR());
+ipcMain.handle('fetch-groups', async () => automationAI.fetchGroups());
 
 ipcMain.handle('save-groups', async (_e, ids) => {
   store.set('selectedGroupIds', Array.isArray(ids) ? ids : []);
-  bot.setSelectedGroups(store.get('selectedGroupIds') || []);
-  return { ok: true, count: bot.getSelectedGroups().length };
+  automationAI.setSelectedGroups(store.get('selectedGroupIds') || []);
+  return { ok: true, count: automationAI.getSelectedGroups().length };
 });
-ipcMain.handle('get-groups-saved', async () => bot.getSelectedGroups());
+ipcMain.handle('get-groups-saved', async () => automationAI.getSelectedGroups());
 
 ipcMain.handle('save-clients', async (_e, rawText) => {
   const settings = store.get('settings') || {};
@@ -111,7 +111,7 @@ ipcMain.handle('save-clients', async (_e, rawText) => {
     arr.push({ name, emoji });
   }
   store.set('clients', arr);
-  bot.setClients(arr);
+  automationAI.setClients(arr);
   return { ok: true, count: arr.length };
 });
 ipcMain.handle('get-clients', async () => store.get('clients') || []);
@@ -123,33 +123,33 @@ ipcMain.handle('set-settings', async (_e, s) => {
     s || {}
   );
   store.set('settings', merged);
-  bot.setSettings(merged);
+  automationAI.setSettings(merged);
   return merged;
 });
 ipcMain.handle('get-settings', async () => store.get('settings') || { emoji: '✅', ratePerMinute: 20, cooldownSec: 3, normalizeArabic: true, mode: 'emoji', replyText: 'تم ✅' });
 
-ipcMain.handle('start-bot', async () => {
-  bot.setSettings(store.get('settings') || {});
-  bot.setClients(store.get('clients') || []);
-  bot.setSelectedGroups(store.get('selectedGroupIds') || []);
-  await bot.start();
-  return bot.getStatus();
+ipcMain.handle('start-whatsappautomationai', async () => {
+  automationAI.setSettings(store.get('settings') || {});
+  automationAI.setClients(store.get('clients') || []);
+  automationAI.setSelectedGroups(store.get('selectedGroupIds') || []);
+  await automationAI.start();
+  return automationAI.getStatus();
 });
-ipcMain.handle('stop-bot', async () => { await bot.stop(); return bot.getStatus(); });
+ipcMain.handle('stop-whatsappautomationai', async () => { await automationAI.stop(); return automationAI.getStatus(); });
 
-ipcMain.handle('get-last-checked', async () => bot.getLastCheckedMap());
+ipcMain.handle('get-last-checked', async () => automationAI.getLastCheckedMap());
 ipcMain.handle('process-backlog', async (_e, opts) => {
-  await bot.processBacklog(opts || {});
+  await automationAI.processBacklog(opts || {});
   return { ok: true };
 });
 ipcMain.handle('check-backlog', async (_e, opts) => {
-  const res = await bot.countBacklog(opts || {});
+  const res = await automationAI.countBacklog(opts || {});
   return res;
 });
 
 /* ============ Bulk (إرسال جماعي) ============ */
 async function bulkSendLoop() {
-  if (!bot || !bot.isReady || !bulkState.running) return;
+  if (!automationAI || !automationAI.isReady || !bulkState.running) return;
 
   const resetMinuteIfNeeded = () => {
     const now = Date.now();
@@ -172,7 +172,7 @@ async function bulkSendLoop() {
 
     const text = bulkState.messages[bulkState.index];
     try {
-      await bot.client.sendMessage(bulkState.groupId, text);
+      await automationAI.client.sendMessage(bulkState.groupId, text);
       bulkState.index += 1;
       bulkState.lastMinute.count += 1;
 
@@ -187,18 +187,18 @@ async function bulkSendLoop() {
         await new Promise(r => setTimeout(r, bulkState.delaySec * 1000));
       }
     } catch (e) {
-      if (win) win.webContents.send('bot-log', `⚠️ bulk send error: ${e.message || e}`);
+      if (win) win.webContents.send('whatsappautomationai-log', `⚠️ bulk send error: ${e.message || e}`);
       await new Promise(r => setTimeout(r, 1500));
     }
   }
 
-  if (win) win.webContents.send('bot-log', '✅ bulk finished');
+  if (win) win.webContents.send('whatsappautomationai-log', '✅ bulk finished');
   bulkState.running = false;
   BulkStore.set('running', false);
 }
 
 ipcMain.handle('bulk-start', async (_e, opts) => {
-  if (!bot || !bot.isReady) throw new Error('WhatsApp not ready');
+  if (!automationAI || !automationAI.isReady) throw new Error('WhatsApp not ready');
   const { groupId, messages, delaySec = 3, rpm = 20 } = opts || {};
   if (!groupId) throw new Error('groupId required');
   if (!Array.isArray(messages) || messages.length === 0) throw new Error('messages required');
@@ -233,7 +233,7 @@ ipcMain.handle('bulk-cancel', async () => {
   return { ok: true };
 });
 ipcMain.handle('bulk-status', async () => {
-  const status = bot.getStatus();
+  const status = automationAI.getStatus();
   return { ...status, bulk: { running: bulkState.running, paused: bulkState.paused, index: bulkState.index, total: bulkState.total } };
 });
 ipcMain.handle('bulk-save-draft', async (_e, d) => { BulkStore.set('draft', d || null); return { ok: true }; });

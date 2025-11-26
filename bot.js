@@ -11,6 +11,9 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
+const remittanceService = require('./server/services/remittanceService');
+const remittanceData = require('./server/services/remittanceData');
+const aiHelper = require('./server/services/aiHelper');
 
 class SimpleStore {
   constructor(filePath) {
@@ -115,6 +118,14 @@ class WhatsAppBotService {
       },
       this.queueConfigStore.get('config', {})
     );
+    this.remittanceConfigStore = new SimpleStore(path.join(this.dataDir, 'remittance-config.json'));
+    this.remittanceConfig = Object.assign(
+      {
+        remittanceNotificationGroups: [],
+        internalReviewGroup: '',
+      },
+      this.remittanceConfigStore.get('config', {})
+    );
     this.sentCount = 0;
     this.failedCount = 0;
     this.jobSeq = 0;
@@ -197,6 +208,21 @@ class WhatsAppBotService {
     return t;
   }
 
+  async _respectRateLimits(chatId) {
+    const cd = Math.max(0, Number(this.settings.cooldownSec || 0));
+    const lastCool = this.state.get(`cool.${chatId}`, 0);
+    const since = Date.now() - lastCool;
+    if (cd > 0 && since < cd * 1000) {
+      await this.wait(cd * 1000 - since);
+    }
+
+    const rpm = Math.max(1, Number(this.settings.ratePerMinute || 1));
+    if (this.minuteCount >= rpm) {
+      this.log('⏳ امتلأ حد الرد بالدقيقة — انتظار قصير…');
+      await this.wait(4000);
+    }
+  }
+
   escapeRegex(s = '') {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
@@ -226,6 +252,17 @@ class WhatsAppBotService {
 
   _markDone(msgId) {
     if (msgId) this.state.set(`done.${msgId}`, Date.now());
+  }
+
+  _extractPhoneFromJid(jid = '') {
+    return String(jid || '').replace(/@.*/, '');
+  }
+
+  _classifyIncomingMessage(text = '') {
+    const norm = this.normalizeArabic(text);
+    const keywords = ['حواله', 'راتب', 'وصلت', 'دفع', 'استلمت'];
+    if (keywords.some((w) => norm.includes(w))) return 'REMITTANCE_QUESTION';
+    return 'GENERAL_CHAT';
   }
 
   _upsertChat(chat) {
@@ -503,20 +540,33 @@ class WhatsAppBotService {
       try {
         if (!this.running) continue;
         if (type !== 'notify' && type !== 'append') continue;
-        const fromMe = msg.key?.fromMe;
         const chatId = msg.key?.remoteJid;
-        if (!chatId || !chatId.endsWith('@g.us')) continue;
-        if (fromMe) continue;
-        if (this.selectedGroupIds.length && !this.selectedGroupIds.includes(chatId)) continue;
-
+        if (!chatId) continue;
+        const isGroup = chatId.endsWith('@g.us');
         const tsMs = Number(msg.messageTimestamp || Date.now()) * 1000;
         const text = (this._extractText(msg) || '').trim();
         const mid = this._msgId(msg);
 
         if (this._isDone(mid)) {
-          this.setLastChecked(chatId, tsMs);
+          if (isGroup) this.setLastChecked(chatId, tsMs);
           continue;
         }
+
+        if (!isGroup) {
+          this._enqueueJob({
+            kind: 'direct',
+            chatId,
+            tsMs,
+            messagePreview: text?.slice?.(0, 120) || '',
+            exec: async () => {
+              await this._handleDirectMessage({ msgObj: msg, chatId, text, mid });
+            },
+          });
+          continue;
+        }
+
+        await this._handleRemittanceReceiptNotification({ msgObj: msg, chatId, text });
+        if (this.selectedGroupIds.length && !this.selectedGroupIds.includes(chatId)) continue;
 
         const chatName = await this._getGroupName(chatId);
         this._enqueueJob({
@@ -557,6 +607,73 @@ class WhatsAppBotService {
     if (m.listResponseMessage?.singleSelectReply?.selectedRowId) return m.listResponseMessage.singleSelectReply.selectedRowId;
     if (m.templateButtonReplyMessage?.selectedId) return m.templateButtonReplyMessage.selectedId;
     return '';
+  }
+
+  _messageHasReceipt(msgObj = {}) {
+    const m = msgObj?.message || {};
+    if (m.imageMessage) return true;
+    if (m.documentMessage) {
+      const mime = (m.documentMessage.mimetype || '').toLowerCase();
+      if (mime.includes('pdf') || mime.startsWith('image/')) return true;
+    }
+    return false;
+  }
+
+  _extractIdFromText(text = '') {
+    const match = String(text || '').match(/(\d{4,})/);
+    return match ? match[1] : null;
+  }
+
+  _isRemittanceNotificationGroup(chatId) {
+    const groups = this.remittanceConfig?.remittanceNotificationGroups || [];
+    return Array.isArray(groups) && groups.includes(chatId);
+  }
+
+  async _handleRemittanceReceiptNotification({ msgObj, chatId, text }) {
+    if (!this._isRemittanceNotificationGroup(chatId)) return;
+    if (!this._messageHasReceipt(msgObj)) return;
+
+    const possibleId = this._extractIdFromText(text);
+    if (!possibleId) return;
+
+    try {
+      remittanceData.linkReceiptToId(possibleId, {
+        messageId: this._msgId(msgObj),
+        groupId: chatId,
+        timestamp: Number(msgObj.messageTimestamp || Date.now()) * 1000,
+      });
+    } catch (e) {
+      this.log('⚠️ failed to link remittance receipt: ' + (e.message || e));
+    }
+
+    const reviewGroup = this.remittanceConfig?.internalReviewGroup;
+    if (reviewGroup) {
+      try {
+        await this.socket?.relayMessage?.(reviewGroup, msgObj.message, { messageId: this._msgId(msgObj) });
+      } catch (e) {
+        this.log('⚠️ failed to forward receipt: ' + (e.message || e));
+      }
+    }
+  }
+
+  _queueReply({ chatId, text, quoted, kind = 'reply' }) {
+    if (!chatId || !text) return null;
+    return this._enqueueJob({
+      kind,
+      chatId,
+      messagePreview: text.slice(0, 120),
+      exec: async () => {
+        await this._sendTextMessage(chatId, text, quoted);
+      },
+    });
+  }
+
+  async _sendTextMessage(chatId, text, quotedMsg) {
+    if (!this.socket || !text) return;
+    await this._respectRateLimits(chatId);
+    await this.socket.sendMessage(chatId, { text }, quotedMsg ? { quoted: quotedMsg } : undefined);
+    this.minuteCount += 1;
+    this.state.set(`cool.${chatId}`, Date.now());
   }
 
   _enqueueJob(payload = {}) {
@@ -640,20 +757,24 @@ class WhatsAppBotService {
     this._emitQueueUpdate();
   }
 
+  async _handleDirectMessage({ msgObj, chatId, text, mid }) {
+    const classification = this._classifyIncomingMessage(text);
+    let reply = '';
+
+    if (classification === 'REMITTANCE_QUESTION') {
+      const phone = this._extractPhoneFromJid(chatId);
+      const statusData = remittanceService.getStatusForPhone(phone);
+      reply = aiHelper.generateReply({ type: 'REMITTANCE_STATUS', statusData, originalMessage: text });
+    } else {
+      reply = aiHelper.generateReply({ type: 'GENERAL_SUPPORT', originalMessage: text });
+    }
+
+    this._queueReply({ chatId, text: reply, quoted: msgObj, kind: classification.toLowerCase() });
+    this._markDone(mid);
+  }
+
   async _processOneMessage({ msgObj, chatId, chatName, tsMs, text, mid }) {
-    const cd = Math.max(0, Number(this.settings.cooldownSec || 0));
-    const lastCool = this.state.get(`cool.${chatId}`, 0);
-    const since = Date.now() - lastCool;
-    if (cd > 0 && since < cd * 1000) {
-      await this.wait(cd * 1000 - since);
-    }
-
-    const rpm = Math.max(1, Number(this.settings.ratePerMinute || 1));
-    if (this.minuteCount >= rpm) {
-      this.log('⏳ امتلأ حد الرد بالدقيقة — انتظار قصير…');
-      await this.wait(4000);
-    }
-
+    await this._respectRateLimits(chatId);
     const normBody = this.settings.normalizeArabic ? this.normalizeArabic(text) : (text || '').toLowerCase();
     let matched = null;
     for (const c of this.clients) {

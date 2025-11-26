@@ -10,6 +10,7 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  makeInMemoryStore,
 } = require('@whiskeysockets/baileys');
 
 class SimpleStore {
@@ -75,6 +76,7 @@ class WhatsAppBotService {
     this.emitter = new EventEmitter();
     this.sessionsDir = sessionsDir;
     this.socket = null;
+    this.store = makeInMemoryStore({ logger: pino({ level: 'silent' }) });
 
     this.qrDataUrl = null;
     this.isReady = false;
@@ -97,6 +99,7 @@ class WhatsAppBotService {
 
     this.queue = [];
     this.workerRunning = false;
+    this.queueDelayMs = 1000;
 
     this.minuteCount = 0;
     setInterval(() => (this.minuteCount = 0), 60_000);
@@ -104,6 +107,7 @@ class WhatsAppBotService {
     this.logger = pino({ level: 'silent' });
     this.messageHistory = new Map(); // chatId -> [{ key, tsMs, text, message }]
     this.groupNameCache = new Map();
+    this.archivesCache = [];
   }
 
   // ========= Utilities =========
@@ -246,6 +250,8 @@ class WhatsAppBotService {
       markOnlineOnConnect: false,
     });
 
+    if (this.store) this.store.bind(this.socket.ev);
+
     this.socket.ev.on('creds.update', saveCreds);
     this.socket.ev.on('connection.update', (update) => this._handleConnectionUpdate(update));
     this.socket.ev.on('messages.upsert', (m) => this._handleMessagesUpsert(m));
@@ -353,6 +359,7 @@ class WhatsAppBotService {
             await this._processOneMessage({ msgObj: msg, chatId, chatName, tsMs, text, mid });
           },
         });
+        this._emitQueueUpdate();
         this._runWorker();
       } catch (e) {
         this.log('⚠️ live message error: ' + (e.message || e));
@@ -388,17 +395,21 @@ class WhatsAppBotService {
   async _runWorker() {
     if (this.workerRunning) return;
     this.workerRunning = true;
+    this._emitQueueUpdate();
 
     while (this.running && this.queue.length > 0) {
       const item = this.queue.shift();
+      this._emitQueueUpdate();
       try {
         await item.exec();
       } catch (e) {
         this.log(`[worker-error] ${e.message || e}`);
       }
+      if (this.queueDelayMs > 0) await this.wait(this.queueDelayMs);
     }
 
     this.workerRunning = false;
+    this._emitQueueUpdate();
   }
 
   async _processOneMessage({ msgObj, chatId, chatName, tsMs, text, mid }) {
@@ -451,6 +462,7 @@ class WhatsAppBotService {
     }
     this.running = true;
     this.log('🚀 بدأ التفاعل');
+    this._emitQueueUpdate();
     this._runWorker();
     try { this.emitter.emit('status', this.getStatus()); } catch {}
   }
@@ -458,6 +470,7 @@ class WhatsAppBotService {
   async stop() {
     this.running = false;
     this.log('🛑 تم الإيقاف');
+    this._emitQueueUpdate();
     try { this.emitter.emit('status', this.getStatus()); } catch {}
   }
 
@@ -481,6 +494,20 @@ class WhatsAppBotService {
     if (this.qrDataUrl) return { qr: this.qrDataUrl };
     if (this.isReady) return { message: 'Already connected' };
     return { error: 'QR not available yet' };
+  }
+
+  async fetchArchives() {
+    if (!this.isReady) throw new Error('WhatsApp not ready');
+    const chats = this.store?.chats?.all?.() || [];
+    const archives = chats
+      .filter((c) => c?.id && (c.archive === true || c.archived === true))
+      .map((c) => ({ id: c.id, name: c.name || c.subject || c.id }));
+    this.archivesCache = archives;
+    this.log(`📦 تم جلب الأرشيف: ${archives.length}`);
+    try {
+      this.emitter.emit('archives', { archives });
+    } catch {}
+    return archives;
   }
 
   async fetchGroups() {
@@ -507,6 +534,10 @@ class WhatsAppBotService {
       id: g.id,
       name: g.name || g.subject || 'مجموعة بدون اسم',
     }));
+  }
+
+  getQueueStatus() {
+    return { length: this.queue.length, running: this.workerRunning };
   }
 
   async processBacklog({ startAtMs = null, limitPerChat = 800 } = {}) {
@@ -548,6 +579,7 @@ class WhatsAppBotService {
             });
           },
         });
+        this._emitQueueUpdate();
       }
     }
 
@@ -649,6 +681,12 @@ class WhatsAppBotService {
     const num = String(input).replace(/[^0-9]/g, '');
     if (!num) throw new Error('رقم غير صالح');
     return `${num}@s.whatsapp.net`;
+  }
+
+  _emitQueueUpdate() {
+    try {
+      this.emitter.emit('queue:update', { type: 'queue:update', length: this.queue.length, running: this.workerRunning });
+    } catch {}
   }
 }
 

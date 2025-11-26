@@ -49,6 +49,7 @@ const api = {
   getQR() { return this.request('/api/bot/status'); },
   processBacklog(opts) { return this.request('/api/bot/process-backlog', { method:'POST', body: JSON.stringify(opts||{}) }); },
   checkBacklog(opts) { return this.request('/api/bot/check-backlog', { method:'POST', body: JSON.stringify(opts||{}) }); },
+  archives() { return this.request('/api/archives'); },
   saveSettings(payload) { return this.request('/api/settings/save', { method:'POST', body: JSON.stringify(payload) }); },
   loadSettings() { return this.request('/api/settings/load'); },
   bulkStart(data){ return this.request('/api/bulk/start', { method:'POST', body: JSON.stringify(data||{}) }); },
@@ -60,7 +61,8 @@ const api = {
   bulkLoadDraft(){ return this.request('/api/bulk/load-draft'); },
   bulkSaveSettings(d){ return this.request('/api/bulk/save-settings', { method:'POST', body: JSON.stringify(d||{}) }); },
   bulkLoadSettings(){ return this.request('/api/bulk/load-settings'); },
-  bulkGroups(){ return this.request('/api/bulk/groups'); }
+  bulkGroups(){ return this.request('/api/bulk/groups'); },
+  queueStatus(){ return this.request('/api/queue/status'); }
 };
 
 function $(id){ return document.getElementById(id); }
@@ -93,6 +95,7 @@ function loadLocal(key, fallback){ try { return JSON.parse(localStorage.getItem(
 
 let lastConnectionStatus = null;
 let bulkGroupsLoaded = false;
+let queueBoxInitialized = false;
 
 async function initLogin(){
   const btn = $('btn-login');
@@ -131,6 +134,14 @@ async function initDashboard(){
     console.log('Groups from socket:', list);
     renderBulkGroups(list, $('groupSelect')?.value || $('groupSelect')?.dataset?.pendingSelection || '');
   });
+  socket.on('archives', (payload = {}) => {
+    const list = payload?.archives || [];
+    logMain(`تم جلب الأرشيف: ${list.length}`);
+    renderArchives(list);
+  });
+  socket.on('queue:update', (payload = {}) => {
+    renderQueueStatus({ length: payload.length || 0, running: !!payload.running });
+  });
 
   const savedUi = loadLocal('ui-state', {});
   const savedBulkId = savedUi?.bulk?.draft?.groupId || savedUi?.bulk?.groupId || '';
@@ -155,7 +166,12 @@ async function initDashboard(){
 
   $('btn-start').onclick = async ()=>{ await api.startBot(); const s = await api.status(); updateStatusPills(s); logMain('بدء التفاعل'); };
   $('btn-stop').onclick  = async ()=>{ await api.stopBot();  const s = await api.status(); updateStatusPills(s); logMain('إيقاف التفاعل'); };
-  $('btn-check-backlog').onclick = async ()=>{ const res = await api.checkBacklog({ startAtMs: getBacklogStartTs() }); logMain(`نتيجة الفحص: ${res.total} رسالة`); (res.byGroup||[]).forEach(g=>logMain(`- ${g.name}: ${g.count}`)); };
+  $('btn-check-backlog').onclick = async ()=>{
+    await refreshArchives(logMain);
+    const res = await api.checkBacklog({ startAtMs: getBacklogStartTs() });
+    logMain(`نتيجة الفحص: ${res.total} رسالة`);
+    (res.byGroup||[]).forEach(g=>logMain(`- ${g.name}: ${g.count}`));
+  };
   $('btn-backlog').onclick = async ()=>{ await api.processBacklog({ startAtMs: getBacklogStartTs() }); logMain('✓ تم دفع الأرشيف للطابور'); };
 
   $('btn-refresh-groups').onclick = ()=> { fetchGroups(savedUi, true); loadBulkGroups({ savedId: $('groupSelect').value, force: true }); };
@@ -175,6 +191,7 @@ async function initDashboard(){
   loadBulkGroups({ savedId: savedBulkId });
   refreshStatus();
   pollStatus();
+  refreshQueueStatus();
 }
 
 function updateStatusPills(status){
@@ -204,6 +221,9 @@ function updateStatusPills(status){
   if (status.connectionStatus === 'connected' && prev !== 'connected'){
     const saved = loadLocal('ui-state', {})?.bulk?.draft?.groupId || '';
     loadBulkGroups({ savedId: saved, force: true });
+  }
+  if (typeof status.queueSize !== 'undefined') {
+    renderQueueStatus({ length: status.queueSize, running: status.running });
   }
 }
 
@@ -295,6 +315,85 @@ async function loadBulkGroups({ savedId = '', force = false } = {}){
     select.appendChild(opt);
     const messageBox = getBulkGroupsMessageBox(select);
     if (messageBox) messageBox.textContent = 'لا توجد مجموعات متاحة حالياً.';
+  }
+}
+
+function ensureQueueBox(){
+  if (queueBoxInitialized) return $('queue-info');
+  const status = document.querySelector('.status');
+  if (!status) return null;
+  const box = document.createElement('div');
+  box.id = 'queue-info';
+  box.className = 'muted';
+  box.style.marginTop = '6px';
+  status.appendChild(box);
+  queueBoxInitialized = true;
+  return box;
+}
+
+function renderQueueStatus({ length = 0, running = false } = {}){
+  const box = ensureQueueBox();
+  if (!box) return;
+  if (!length) {
+    box.textContent = 'الطابور فارغ';
+    return;
+  }
+  box.textContent = running ? `الطابور يعمل (${length})` : `الطابور متوقف (${length})`;
+}
+
+async function refreshQueueStatus(){
+  try {
+    const q = await api.queueStatus();
+    renderQueueStatus({ length: q.length || 0, running: !!q.running });
+  } catch {}
+}
+
+function ensureArchivesBox(){
+  let box = $('archives-list');
+  if (box) return box;
+  const logCard = $('log')?.parentElement;
+  if (!logCard) return null;
+  const title = document.createElement('div');
+  title.id = 'archives-title';
+  title.className = 'muted';
+  title.style.marginTop = '8px';
+  title.textContent = 'المحادثات المؤرشفة';
+  box = document.createElement('div');
+  box.id = 'archives-list';
+  box.className = 'list';
+  box.style.marginTop = '6px';
+  logCard.insertBefore(box, $('log'));
+  logCard.insertBefore(title, box);
+  return box;
+}
+
+function renderArchives(list = []){
+  const box = ensureArchivesBox();
+  if (!box) return;
+  box.innerHTML = '';
+  if (!list.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'لا توجد محادثات مؤرشفة.';
+    box.appendChild(empty);
+    return;
+  }
+  list.forEach((item) => {
+    const row = document.createElement('div');
+    row.className = 'group';
+    row.textContent = `${item.name || item.id} (${item.id})`;
+    box.appendChild(row);
+  });
+}
+
+async function refreshArchives(logger){
+  try {
+    const res = await api.archives();
+    const list = res?.archives || [];
+    renderArchives(list);
+    if (logger) logger(`تم جلب الأرشيف: ${list.length}`);
+  } catch (e) {
+    if (logger) logger('تعذر جلب الأرشيف');
   }
 }
 

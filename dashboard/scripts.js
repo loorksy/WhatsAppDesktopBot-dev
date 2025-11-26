@@ -68,7 +68,9 @@ const api = {
   pauseQueue(){ return this.request('/api/queue/pause', { method:'POST' }); },
   resumeQueue(){ return this.request('/api/queue/resume', { method:'POST' }); },
   clearQueue(){ return this.request('/api/queue/clear', { method:'POST' }); },
-  queueHistory(){ return this.request('/api/queue/history'); }
+  queueHistory(){ return this.request('/api/queue/history'); },
+  remittances(){ return this.request('/api/remittances'); },
+  remittanceAutoReply(data){ return this.request('/api/remittances/auto-reply', { method:'POST', body: JSON.stringify(data||{}) }); }
 };
 
 function $(id){ return document.getElementById(id); }
@@ -160,6 +162,7 @@ async function initDashboard(){
   const savedUi = loadLocal('ui-state', {});
   const savedBulkId = savedUi?.bulk?.draft?.groupId || savedUi?.bulk?.groupId || '';
   restoreUI(savedUi);
+  loadRemittances();
 
   $('btn-logout').onclick = async ()=>{ await api.logout(); clearToken(); window.location.href='/dashboard/login.html'; };
   $('btn-clear-log').onclick = ()=>{ $('log').innerHTML=''; };
@@ -214,6 +217,8 @@ async function initDashboard(){
   $('btn-queue-pause').onclick = async () => { await api.pauseQueue(); logMain('تم إيقاف الطابور مؤقتاً'); refreshQueueStatus(); };
   $('btn-queue-resume').onclick = async () => { await api.resumeQueue(); logMain('تم استئناف الطابور'); refreshQueueStatus(); };
   $('btn-queue-clear').onclick = async () => { await api.clearQueue(); logMain('تم مسح الطابور'); refreshQueueStatus(); refreshQueueHistory(); };
+  $('btn-refresh-remittances')?.addEventListener('click', () => loadRemittances());
+  $('remittance-search')?.addEventListener('input', () => renderRemittances(remittancesCache));
 
   await loadRemoteState();
   fetchGroups(savedUi, false);
@@ -416,6 +421,85 @@ async function refreshQueueHistory(){
     const res = await api.queueHistory();
     renderQueueHistory(res.history || []);
   } catch {}
+}
+
+let remittancesCache = [];
+
+async function loadRemittances(){
+  try {
+    const res = await api.remittances();
+    remittancesCache = Array.isArray(res?.remittances) ? res.remittances : [];
+    renderRemittances(remittancesCache);
+  } catch (e) {
+    console.error('Failed to load remittances', e);
+  }
+}
+
+async function toggleAutoReply(phoneNumber, enabled, btn){
+  if (!phoneNumber) return;
+  const control = btn;
+  if (control) control.disabled = true;
+  try {
+    await api.remittanceAutoReply({ phoneNumber, enabled });
+    await loadRemittances();
+  } catch (e) {
+    alert(e.message || 'تعذر تحديث الرد الآلي');
+  } finally {
+    if (control) control.disabled = false;
+  }
+}
+
+function renderRemittances(list = []){
+  const box = $('remittance-list');
+  if (!box) return;
+  const query = ($('remittance-search')?.value || '').trim().toLowerCase();
+  const filtered = list.filter((item) => {
+    if (!query) return true;
+    const phoneMatch = (item.phoneNumber || '').toString().toLowerCase().includes(query);
+    const idMatch = (item.ids || []).some((i) => (i.id || '').toString().toLowerCase().includes(query));
+    return phoneMatch || idMatch;
+  });
+
+  box.innerHTML = '';
+  if (!filtered.length){
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'لا توجد تحويلات لعرضها.';
+    box.appendChild(empty);
+    return;
+  }
+
+  filtered.forEach((item) => {
+    const card = document.createElement('div');
+    card.className = 'group';
+
+    const header = document.createElement('div');
+    header.className = 'flex-row space-between';
+    const title = document.createElement('strong');
+    title.textContent = item.phoneNumber || 'غير معروف';
+    const toggle = document.createElement('button');
+    toggle.textContent = item.autoReplyEnabled === false ? 'تفعيل الرد الآلي' : 'إيقاف الرد الآلي';
+    toggle.onclick = () => toggleAutoReply(item.phoneNumber, item.autoReplyEnabled === false, toggle);
+    header.append(title, toggle);
+
+    const ids = document.createElement('div');
+    ids.className = 'muted';
+    if (Array.isArray(item.ids) && item.ids.length){
+      ids.innerHTML = item.ids
+        .map((i) => {
+          const status = i.status || '—';
+          const amt = i.amount ? ` — ${i.amount}` : '';
+          const lu = i.lastUpdate ? ` — آخر تحديث: ${fmtTs(i.lastUpdate)}` : '';
+          return `${i.id}: ${status}${amt}${lu}`;
+        })
+        .join('<br>');
+    } else {
+      ids.textContent = 'لا توجد هويات مرتبطة.';
+    }
+
+    card.append(header, ids);
+    box.appendChild(card);
+  });
 }
 
 function renderQueueHistory(list = []){

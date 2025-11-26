@@ -14,6 +14,7 @@ const authRoutes = require('./routes/auth');
 const bulkRoutes = require('./routes/bulk');
 const archiveRoutes = require('./routes/archive');
 const queueRoutes = require('./routes/queue');
+const remittanceRoutes = require('./routes/remittance');
 
 const app = express();
 const server = http.createServer(app);
@@ -62,6 +63,7 @@ app.use('/api', settingsRoutes({ bot }));
 app.use('/api', bulkRoutes({ bot }));
 app.use('/api', archiveRoutes({ bot }));
 app.use('/api', queueRoutes({ bot }));
+app.use('/api', remittanceRoutes());
 app.use('/', authRoutes({ jwt, JWT_SECRET }));
 
 app.use('/dashboard', express.static(DASHBOARD_DIR));

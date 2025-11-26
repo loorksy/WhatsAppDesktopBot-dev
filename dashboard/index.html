@@ -138,6 +138,20 @@
         <div class="muted">لا توجد رسائل في السجل بعد.</div>
       </div>
     </section>
+
+    <section class="card" id="remittance-card" style="margin-top:12px">
+      <h3>مساعد الحوالات</h3>
+      <div class="flex-row space-between">
+        <div style="flex:1 1 240px">
+          <label for="remittance-search">بحث بالهاتف أو الهوية</label>
+          <input id="remittance-search" type="text" placeholder="مثال: 9665... أو رقم الهوية" style="width:100%">
+        </div>
+        <div class="btns" style="align-self:flex-end">
+          <button id="btn-refresh-remittances">تحديث البيانات</button>
+        </div>
+      </div>
+      <div class="list" id="remittance-list" style="margin-top:10px"></div>
+    </section>
   </main>
 
   <section class="wrap" id="bulk">

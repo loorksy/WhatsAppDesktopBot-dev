@@ -76,6 +76,8 @@ class WhatsAppBotService {
     this.sessionsDir = sessionsDir;
     this.socket = null;
     this.chats = new Map();
+    this.dataDir = path.join(__dirname, 'data');
+    if (!fs.existsSync(this.dataDir)) fs.mkdirSync(this.dataDir, { recursive: true });
 
     this.qrDataUrl = null;
     this.isReady = false;
@@ -94,7 +96,9 @@ class WhatsAppBotService {
       normalizeArabic: true,
     };
 
-    this.state = new SimpleStore(path.join(this.sessionsDir || process.cwd(), 'bot-state.json'));
+    this.clientsRaw = [];
+
+    this.state = new SimpleStore(path.join(this.dataDir, 'bot-state.json'));
 
     this.queue = [];
     this.workerRunning = false;
@@ -102,7 +106,7 @@ class WhatsAppBotService {
     this.queueDelayMs = 1000;
     this.queueHistory = [];
     this.queueHistoryLimit = 100;
-    this.queueConfigStore = new SimpleStore(path.join(this.sessionsDir || process.cwd(), 'queue-config.json'));
+    this.queueConfigStore = new SimpleStore(path.join(this.dataDir, 'queue-config.json'));
     this.queueConfig = Object.assign(
       {
         delayMsBetweenMessages: 1000,
@@ -124,6 +128,8 @@ class WhatsAppBotService {
     this.archivesCache = [];
 
     this._boundChatHandlers = false;
+
+    this._loadPersistedConfig();
   }
 
   // ========= Utilities =========
@@ -139,6 +145,34 @@ class WhatsAppBotService {
 
   wait(ms) {
     return new Promise((r) => setTimeout(r, ms));
+  }
+
+  _loadPersistedConfig() {
+    try {
+      const saved = this.state.get('persist', {});
+      if (saved.settings) {
+        this.settings = Object.assign({}, this.settings, saved.settings);
+      }
+      if (Array.isArray(saved.selectedGroupIds)) {
+        this.selectedGroupIds = saved.selectedGroupIds;
+      }
+      if (Array.isArray(saved.clients)) {
+        this.clientsRaw = saved.clients;
+        if (saved.clients.length) {
+          this.setClients(saved.clients);
+        }
+      }
+    } catch {}
+  }
+
+  _savePersistedConfig() {
+    try {
+      this.state.set('persist', {
+        settings: this.settings,
+        clients: this.clientsRaw || [],
+        selectedGroupIds: this.selectedGroupIds || [],
+      });
+    } catch {}
   }
 
   _getQueueDelayMs() {
@@ -200,6 +234,51 @@ class WhatsAppBotService {
     this.chats.set(chat.id, { ...prev, ...chat });
   }
 
+  async _fetchMessagesFromChat(chatId, { since = 0, limit = 800 } = {}) {
+    if (!this.socket?.loadMessages || !chatId) return [];
+    const collected = [];
+    let fetched = 0;
+    let cursor = undefined;
+    const batchSize = 200;
+
+    while (fetched < limit) {
+      const batch = Math.min(batchSize, limit - fetched);
+      let msgs = [];
+      try {
+        const res = await this.socket.loadMessages(chatId, batch, cursor);
+        msgs = Array.isArray(res?.messages)
+          ? res.messages
+          : Array.isArray(res)
+            ? res
+            : [];
+      } catch (e) {
+        this.log(`[history] فشل تحميل الرسائل ${chatId}: ${e.message || e}`);
+        break;
+      }
+
+      if (!msgs.length) break;
+
+      const ordered = msgs.slice().reverse();
+      for (const m of ordered) {
+        const tsMs = Number(m.messageTimestamp || 0) * 1000;
+        if (tsMs <= since) continue;
+        collected.push(m);
+      }
+
+      fetched += msgs.length;
+      const last = msgs[msgs.length - 1];
+      if (!last) break;
+      cursor = {
+        id: last.key?.id,
+        fromMe: last.key?.fromMe,
+        timestamp: last.messageTimestamp,
+      };
+      if (!cursor.id) break;
+    }
+
+    return collected.sort((a, b) => Number(a.messageTimestamp || 0) - Number(b.messageTimestamp || 0));
+  }
+
   async _loadMessagesIntoHistory(chatId, limitPerChat = 200) {
     if (!chatId || !this.socket?.loadMessages) return;
     try {
@@ -243,6 +322,7 @@ class WhatsAppBotService {
 
   setClients(arr = []) {
     const list = Array.isArray(arr) ? arr : [];
+    this.clientsRaw = list;
     this.clients = list
       .map((c) => {
         const name = typeof c === 'string' ? c : c.name || '';
@@ -253,6 +333,7 @@ class WhatsAppBotService {
       })
       .filter((x) => x.name && x._rx);
     this.log(`clients loaded: ${this.clients.length}`);
+    this._savePersistedConfig();
   }
 
   setSettings(s = {}) {
@@ -262,10 +343,12 @@ class WhatsAppBotService {
     );
     const raw = this.clients.map(({ name, emoji }) => ({ name, emoji }));
     this.setClients(raw);
+    this._savePersistedConfig();
   }
 
   setSelectedGroups(ids = []) {
     this.selectedGroupIds = Array.isArray(ids) ? ids : [];
+    this._savePersistedConfig();
   }
 
   getSelectedGroups() {
@@ -595,6 +678,7 @@ class WhatsAppBotService {
     this.running = true;
     this.queuePaused = false;
     this.log('🚀 بدأ التفاعل');
+    await this._scanUnreadOnStart();
     this._emitQueueUpdate();
     this._runWorker();
     try { this.emitter.emit('status', this.getStatus()); } catch {}
@@ -720,6 +804,15 @@ class WhatsAppBotService {
     return this.queueHistory.slice();
   }
 
+  async _scanUnreadOnStart(limitPerChat = 200) {
+    if (!this.socket || !this.isReady) return;
+    try {
+      await this.processBacklog({ startAtMs: null, limitPerChat });
+    } catch (e) {
+      this.log(`[startup] فشل مسح الرسائل السابقة: ${e.message || e}`);
+    }
+  }
+
   async processBacklog({ startAtMs = null, limitPerChat = 800 } = {}) {
     if (!this.socket || !this.isReady) throw new Error('WhatsApp not ready');
     const groups = await this.fetchGroups();
@@ -730,32 +823,30 @@ class WhatsAppBotService {
     for (const chat of target) {
       const chatId = chat.id;
       const since = startAtMs ?? this.getLastChecked(chatId) ?? 0;
-      await this._loadMessagesIntoHistory(chatId, limitPerChat);
       this.log(`[backlog] ${chat.name} since ${since ? new Date(since).toLocaleString() : '—'}`);
-      const msgs = (this.messageHistory.get(chatId) || [])
-        .filter((m) => m.tsMs > since && !m.message?.key?.fromMe && !!m.text)
-        .sort((a, b) => a.tsMs - b.tsMs)
-        .slice(0, limitPerChat);
+      const msgs = await this._fetchMessagesFromChat(chatId, { since, limit: limitPerChat });
 
       for (const m of msgs) {
-        const text = (m.text || '').trim();
-        const mid = m.key?.id;
+        const tsMs = Number(m.messageTimestamp || 0) * 1000;
+        const text = (this._extractText(m) || '').trim();
+        const mid = this._msgId(m);
+        if (m.key?.fromMe) continue;
         if (this._isDone(mid)) {
-          this.setLastChecked(chatId, m.tsMs);
+          this.setLastChecked(chatId, tsMs);
           continue;
         }
         this._enqueueJob({
           kind: 'backlog',
           chatId,
           chatName: chat.name,
-          tsMs: m.tsMs,
+          tsMs,
           messagePreview: text?.slice?.(0, 120) || '',
           exec: async () => {
             await this._processOneMessage({
-              msgObj: m.message,
+              msgObj: m,
               chatId,
               chatName: chat.name,
-              tsMs: m.tsMs,
+              tsMs,
               text,
               mid,
             });
@@ -780,16 +871,13 @@ class WhatsAppBotService {
     for (const chat of target) {
       const chatId = chat.id;
       const since = startAtMs ?? this.getLastChecked(chatId) ?? 0;
-      await this._loadMessagesIntoHistory(chatId, limitPerChat);
-      const msgs = (this.messageHistory.get(chatId) || [])
-        .filter((m) => m.tsMs > since && !m.message?.key?.fromMe && !!m.text)
-        .sort((a, b) => a.tsMs - b.tsMs)
-        .slice(0, limitPerChat);
+      const msgs = await this._fetchMessagesFromChat(chatId, { since, limit: limitPerChat });
       let count = 0;
       for (const m of msgs) {
-        const mid = m.key?.id;
+        const mid = this._msgId(m);
+        if (m.key?.fromMe) continue;
         if (this._isDone(mid)) continue;
-        const text = (m.text || '').trim();
+        const text = (this._extractText(m) || '').trim();
         if (!text) continue;
         if (this.clients && this.clients.length) {
           const normBody = this.settings.normalizeArabic ? this.normalizeArabic(text) : text.toLowerCase();
